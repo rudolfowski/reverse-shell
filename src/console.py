@@ -3,7 +3,6 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts import print_formatted_text
 
 class Console:
-
     def __init__(self, input_callback=None, prompt="sh3ll => "):
         
         self.__session = PromptSession(prompt)
@@ -28,7 +27,6 @@ class Console:
                 except EOFError:
                     break
                 except KeyboardInterrupt:
-                    print("\nExiting...")
                     break;
     
 

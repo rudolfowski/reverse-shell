@@ -1,9 +1,11 @@
 import socket
 from uuid import uuid4
 from abc import ABC, abstractmethod
-from threading import Lock
 import errno
 from base64 import b64decode,b64encode
+
+from .event_manager import EventManager
+from .console import Console
 
 class MessageDecoder(ABC):
 
@@ -30,18 +32,22 @@ class Base64Decoder(MessageDecoder):
         return b64encode(data.encode()).decode()
 
 class Implant:
-    def __init__(self, sheller, conn, addr):
+    def __init__(self, conn, addr, args, console: Console, event_manager: EventManager):
         self.id = uuid4()
         self.conn = conn
         self.addr = addr
-        self.args = sheller.args
-        self.console = sheller.console
-        self.sheller = sheller
+        self.event_manager = event_manager
+        self.console = console
+        self.secret = args.secret
+
         self.closed = False
         self.decoder = SimpleDecoder()
 
+    def __eq__(self, other):
+        return self.id == other.id
+
     def authenticate(self):
-        if not self.args.secret:
+        if not self.secret:
             return True
 
         self.conn.settimeout(5)
@@ -58,10 +64,10 @@ class Implant:
             return False
 
         data = self.decoder.decode(buffer)
-        if data != self.args.secret:
+        if data != self.secret:
             self.console.write("[-] Invalid secret key.")
             return False
-        
+
         self.console.write(f"[+] Implant authenticated {self.addr}")
 
         return True
@@ -72,8 +78,8 @@ class Implant:
                 data = self.conn.recv(1024)
                 if not data:
                     break
+
                 res = self.decoder.decode(data)
-                        
                 self.console.write(res)
             except OSError as e:
                 # Handle the case where the socket is closed
@@ -82,14 +88,21 @@ class Implant:
             except Exception as e:
                 self.console.write(f"[!] Error: {e}")
                 break
+
         self.close()
 
-    def close(self):
+    def close(self, fire_event=True):
+        """Close the implant connection and clean up resources."""
+
         if not self.closed:
-            self.closed = True
+            self.conn.shutdown(socket.SHUT_RDWR)
             self.conn.close()
-            self.sheller.remove_implant(self)
-            self.console.write(f"[+] Implant { self.addr } disconnected.")
+            self.closed = True
+            if fire_event:
+                self.event_manager.emit("implant_closed", self)
+
+    def handle_input(self, data):
+        pass
 
     def send(self, data):
         if self.closed:
@@ -101,35 +114,3 @@ class Implant:
             self.console.write(f"[!] Error: {e}")
             self.close()
 
-class ImplantsList:
-    def __init__(self):
-        self._list = []
-        self._lock = Lock()
-    
-    def append(self, item):
-        with self._lock:
-            self._list.append(item)
-
-    def extend(self, items):
-        with self._lock:
-            self._list.extend(items)
-
-    def pop(self):
-        with self._lock:
-            return self._list.pop()
-
-    def remove(self, item):
-        with self._lock:
-            self._list.remove(item)
-
-    def __getitem__(self, index):
-        with self._lock:
-            return self._list[index]
-
-    def __len__(self):
-        with self._lock:
-            return len(self._list)
-
-    def __iter__(self):
-        with self._lock:
-            return iter(list(self._list))

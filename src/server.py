@@ -57,9 +57,8 @@ class Server:
         self.closed = True
 
         for implant in self.implant_manager:
-            implant.close(False)
+            implant.close()
 
-        self.socket.shutdown(socket.SHUT_RDWR)
         self.socket.close()
 
         if self.listen_thread:

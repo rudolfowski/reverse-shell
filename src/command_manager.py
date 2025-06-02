@@ -24,8 +24,9 @@ class CommandManager:
             text = text[1:]
             system_command = True
 
+        implant =  self.implants.current
         # if no implant selected we can use only system commands 
-        if not self.implants.current and not system_command:
+        if not implant and not system_command:
             self.console.write("[-] No implant selected.")
             return
 
@@ -52,9 +53,12 @@ class CommandManager:
                     return
                 self.__select_implant(args[0])
                 return
+        else:
+            if not implant:
+                self.console.write("[-] No implant selected.")
+                return
 
-        if self.implants.current:
-            self.implants.current.handle_input(text)
+            implant.send(text)
 
     def __exit(self):
         self.event_manager.emit("close")

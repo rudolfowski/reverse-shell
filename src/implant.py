@@ -91,25 +91,27 @@ class Implant:
 
         self.close()
 
-    def close(self, fire_event=True):
+    def close(self, fire_event=False):
         """Close the implant connection and clean up resources."""
 
         if not self.closed:
-            self.conn.shutdown(socket.SHUT_RDWR)
+            try:
+                self.conn.shutdown(socket.SHUT_RDWR)
+            except OSError as e:
+                if e.errno == errno.ENOTCONN:
+                    # Socket is already closed
+                    pass
             self.conn.close()
             self.closed = True
             if fire_event:
                 self.event_manager.emit("implant_closed", self)
-
-    def handle_input(self, data):
-        pass
 
     def send(self, data):
         if self.closed:
             return
 
         try:
-            self.conn.send(self.decoder.encode(data))
+            self.conn.sendall(self.decoder.encode(data))
         except Exception as e:
             self.console.write(f"[!] Error: {e}")
             self.close()

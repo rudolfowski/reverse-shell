@@ -59,6 +59,12 @@ class Server:
         for implant in self.implant_manager:
             implant.close()
 
+        try:
+            self.socket.shutdown(socket.SHUT_RDWR)
+        except OSError as e:
+            # Handle the case where the socket is already closed
+            if e.errno == errno.ENOTCONN:
+                pass
         self.socket.close()
 
         if self.listen_thread:
